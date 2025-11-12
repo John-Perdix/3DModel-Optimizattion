@@ -3,6 +3,9 @@ import sys
 import os
 import math
 import pathlib
+import time
+
+start_time = time.time()
 
 
 # Initial arguments
@@ -19,24 +22,28 @@ texture_size = 2048
 # Workflow options
 resolution = texture_size
 
-samples = 128
-
 # Remesh options: 'VOXEL', 'QUAD', 'DECIMATE', 'NONE'
 remesher = 'DECIMATE'
 remesh_percent = 5  # For DECIMATE, percentage of reduction (e.g., 1.0 means 1%)
 
 RECALCULATE_LOW_POLY_NORMALS = True
 
-LOW_POLY_UV_ISLAND_MARGIN = 0.01 # island_margin=0.05
+LOW_POLY_UV_ISLAND_MARGIN = 0 # island_margin=0.05
 
 # UV Unwrap options: 'SMART', 'NONE'
+samples = 128
 uv_unwrap_method = 'SMART'
+scene = bpy.data.scenes["Scene"]  # replace "Scene" with your scene name if different
+scene.render.engine = "CYCLES"
+scene.cycles.device = 'GPU'
+scene.cycles.samples = samples
+
 
 # Bake options
 bake_method = 'TRANSFER'  # 'TRANSFER', 'ACTIVE', 'NONE'
 cage_settings = 'MANUAL'    # 'AUTO', 'MANUAL'
-extrusion = 0.1           # Used if cage_settings is 'MANUAL'
-ray_distance = 0.2      # Used if cage_settings is 'MANUAL'
+extrusion = 0.02           # Used if cage_settings is 'MANUAL'
+ray_distance = 0.03     # Used if cage_settings is 'MANUAL'
 is_normal_bake_on = True
 is_diffuse_bake_on = True
 
@@ -54,74 +61,31 @@ def apply_modifiers(obj):
 
     for m in obj.modifiers:
         obj.modifiers.remove(m)
-
-# Create high-poly material
-def create_high_poly_material(high_poly):
-    high_poly_mat = bpy.data.materials.new(name="HighPolyMaterial")
-    high_poly_mat.use_nodes = True
-    high_poly.data.materials.clear()
-    high_poly.data.materials.append(high_poly_mat)
-    nodes = high_poly_mat.node_tree.nodes
-    links = high_poly_mat.node_tree.links
-    nodes.clear()
-
-    # Set up high poly vertex color nodes with gamma correction
-    output = nodes.new('ShaderNodeOutputMaterial')
-    vertex_color = nodes.new('ShaderNodeVertexColor')
-    diffuse = nodes.new('ShaderNodeBsdfDiffuse')
-    gamma_node = nodes.new('ShaderNodeGamma')  # Add Gamma node
-
-    # Set Gamma value to 0.4545 to convert from linear to sRGB
-    #gamma_node.inputs['Gamma'].default_value = 0.4545
-    gamma_node.inputs['Gamma'].default_value = 0.9 # TODO: custom color fix
-
-    # Position nodes (optional, for clarity in Blender UI)
-    vertex_color.location = (-300, 0)
-    gamma_node.location = (-100, 0)
-    diffuse.location = (100, 0)
-    output.location = (300, 0)
-
-    # Connect nodes
-    links.new(vertex_color.outputs['Color'], gamma_node.inputs['Color'])
-    links.new(gamma_node.outputs['Color'], diffuse.inputs['Color'])
-    links.new(diffuse.outputs['BSDF'], output.inputs['Surface'])
-
-    if not high_poly.data.vertex_colors:
-        print("No vertex colors found on high-poly mesh!")
-        sys.exit()
-
-    # Use the active vertex color layer
-    vertex_color.layer_name = high_poly.data.vertex_colors.active.name
-    print(f"Using vertex color layer: {vertex_color.layer_name}")
-
-"""
-def create_high_poly_material(high_poly):
-    high_poly_mat = bpy.data.materials.new(name="HighPolyMaterial")
-    high_poly_mat.use_nodes = True
-    high_poly.data.materials.clear()
-    high_poly.data.materials.append(high_poly_mat)
-    nodes = high_poly_mat.node_tree.nodes
-    links = high_poly_mat.node_tree.links
-    nodes.clear()
-
-    # Set up high poly vertex color nodes without gamma correction
-    output = nodes.new('ShaderNodeOutputMaterial')
-    vertex_color = nodes.new('ShaderNodeVertexColor')
-    diffuse = nodes.new('ShaderNodeBsdfDiffuse')
-
-    # Connect high poly nodes directly without gamma adjustment
-    links.new(vertex_color.outputs['Color'], diffuse.inputs['Color'])
-    links.new(diffuse.outputs['BSDF'], output.inputs['Surface'])
-
-    if not high_poly.data.vertex_colors:
-        print("No vertex colors found on high-poly mesh!")
-        sys.exit()
-
-    # Use the active vertex color layer
-    vertex_color.layer_name = high_poly.data.vertex_colors.active.name
-    print(f"Using vertex color layer: {vertex_color.layer_name}")
-"""
+        
+""" # Modified apply_modifiers function to handle exceptions and remove unsupported modifiers
+def apply_modifiers(obj):
+    # Make a copy of the modifier list because we'll modify it during iteration
+    modifiers = list(obj.modifiers)
     
+    for m in modifiers:
+        try:
+            # Only support modifiers that can be applied on mesh data
+            if obj.type == 'MESH':
+                # Apply the modifier directly to the mesh
+                mesh = obj.data
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                obj_eval = obj.evaluated_get(depsgraph)
+                mesh_from_mod = obj_eval.to_mesh()
+                
+                obj.data = mesh_from_mod
+                
+                # Remove the modifier after applying
+                obj.modifiers.remove(m)
+                
+        except Exception as e:
+            print(f"Error applying {m.name} to {obj.name}, removing it instead: {e}")
+            obj.modifiers.remove(m) """
+
     
 def recalculate_normals(obj):
     bpy.context.view_layer.objects.active = obj
@@ -195,31 +159,8 @@ def save_image(image):
     image.file_format = "PNG"
     image.save()
 
-
-
-
-#def make_cage(lowpoly):
-#    # make cage for baking
-#    cage = copy_obj(lowpoly)
-#    cage.name = "cage"
-#    bpy.ops.object.editmode_toggle()
-#    bpy.ops.mesh.select_all(action="SELECT")
-#    bpy.ops.transform.shrink_fatten(value=2)
-#    bpy.ops.object.editmode_toggle()
-#    cage.select_set(False)
-#    return cage
     
-#def make_cage(lowpoly):
-#    cage = copy_obj(lowpoly)
-#    cage.name = "cage"
-#    # Apply a Displace modifier to expand the cage slightly
-#    mod = cage.modifiers.new(name="Displace", type='DISPLACE')
-#    mod.strength = 0.1  # Adjust as needed
-#    bpy.ops.object.modifier_apply(modifier=mod.name)
-#    cage.select_set(False)
-#    return cage
-    
-def make_cage(lowpoly, cage_extrusion=0.02):
+def make_cage(lowpoly, cage_extrusion=extrusion):
     # Copy low-poly mesh to create the cage
     cage = copy_obj(lowpoly)
     cage.name = "cage"
@@ -297,12 +238,9 @@ def deselect_all():
 def set_active(object):
     object.select_set(True)
     bpy.context.view_layer.objects.active = object
-
-
-   
     
     
-def remesh_process(highpoly, lowpoly):
+def remesh_process(lowpoly):
     if remesher == "VOXEL":
         # voxel remesh
         avg_voxel_size = calc_avg_voxel_size(lowpoly)
@@ -333,29 +271,13 @@ def remesh_process(highpoly, lowpoly):
         decimate.ratio = remesh_percent / 100
         bpy.ops.object.modifier_apply(modifier=decimate.name)
 
-    """ if remesher != "NONE":
-        # add multires and shrinkwrap modifiers for better result
-        multires = lowpoly.modifiers.new("AutoLow_Multires", "MULTIRES")
-        shrinkwrap = lowpoly.modifiers.new("AutoLow_Shrinkwrap", "SHRINKWRAP")
-        shrinkwrap.wrap_method = "PROJECT"
-        shrinkwrap.target = highpoly
-        shrinkwrap.use_negative_direction = True
-
-        # subdivide multires modifier 3 times
-        for _ in range(3):
-            bpy.ops.object.multires_subdivide(
-                modifier="AutoLow_Multires", mode="CATMULL_CLARK"
-            )
-        bpy.ops.object.modifier_apply(modifier="AutoLow_Shrinkwrap")
-        multires.levels = 0 """
-
 
 def uv_unwrap_process():
     method = uv_unwrap_method
     if method == "SMART":
         bpy.ops.object.editmode_toggle()
         bpy.ops.mesh.select_all(action="SELECT")
-        bpy.ops.uv.smart_project(angle_limit=66, area_weight=0, island_margin=LOW_POLY_UV_ISLAND_MARGIN, correct_aspect=True, scale_to_bounds=True)
+        bpy.ops.uv.smart_project(angle_limit=20, area_weight=0, island_margin=LOW_POLY_UV_ISLAND_MARGIN, correct_aspect=True, scale_to_bounds=True)
         bpy.ops.object.editmode_toggle()
 
 
@@ -378,9 +300,6 @@ def bake_process(highpoly, lowpoly, c_name):
         principled.inputs['Roughness'].default_value = 0.8  # Cork is quite rough
 
         # bake settings
-        bpy.context.scene.render.engine = "CYCLES"
-        bpy.context.scene.cycles.device = 'GPU'
-        bpy.context.scene.cycles.samples = samples
         bpy.context.scene.render.bake.use_pass_direct = False
         bpy.context.scene.render.bake.use_pass_indirect = False
         bpy.context.scene.render.bake.use_pass_color = True  # Add this line
@@ -397,11 +316,7 @@ def bake_process(highpoly, lowpoly, c_name):
             bpy.context.scene.render.bake.max_ray_distance = ray_distance #new line for ray distance
 
         else:
-            #optional auto cage
-            #bpy.context.scene.render.bake.use_cage = True
-            #bpy.context.scene.render.bake.cage_extrusion = extrusion
-
-            #no cage
+            #Use of the auto cage from blender (Does not work well)
             bpy.context.scene.render.bake.use_cage = True
             #bpy.context.scene.render.bake.cage_extrusion = extrusion
             bpy.context.scene.render.bake.max_ray_distance = ray_distance
@@ -418,7 +333,7 @@ def bake_process(highpoly, lowpoly, c_name):
 
             # bake normals
             bake("NORMAL", highpoly, cage)
-            #save_image(normal_image)
+            #save_image(normal_image)(No need to save the images because of the glb format)
 
         # diffuse
         if is_diffuse_bake_on:
@@ -430,7 +345,7 @@ def bake_process(highpoly, lowpoly, c_name):
 
             # bake diffuse
             bake("DIFFUSE", highpoly, cage)
-            #save_image(diffuse_image)
+            #save_image(diffuse_image)(No need to save the images because of the glb format)
 
         # remove cage
         if cage_settings == "MANUAL":
@@ -462,6 +377,12 @@ def clean_high_poly_mesh(obj):
 
     # Return to Object Mode
     bpy.ops.object.mode_set(mode='OBJECT')
+    
+
+def delete_all_objects():
+    # Make a copy of the objects list because we'll remove items while iterating
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
 
 def main():
     global resolution, texture_size, input_path, images_output_path, output_path
@@ -494,9 +415,6 @@ def main():
     output_path = os.path.join(images_output_path, cork_name+'.gltf')
     print("output_path = ", output_path)
     
-    
-    
-    
 
     # Ensure output directories exist
     os.makedirs(os.path.dirname(images_output_path), exist_ok=True)
@@ -505,9 +423,8 @@ def main():
     # **Set scene color management to 'Standard'**
     bpy.context.scene.view_settings.view_transform = 'Standard'
 
-    # Delete default objects
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete(use_global=False)
+    # Example usage:
+    delete_all_objects()
 
     # Import high-poly glTF model
     bpy.ops.import_scene.gltf(filepath=input_path)
@@ -521,49 +438,17 @@ def main():
 
     high_poly = high_poly_objs[0]
     high_poly.name = "HighPoly"
-    
-    #clean_high_poly_mesh(high_poly)
-    
-    #create_high_poly_material(high_poly)
-    
-    recalculate_normals(high_poly)
-    
-    #if RECALCULATE_LOW_POLY_NORMALS:
-    #    # *** Add Weighted Normal Modifier to improve normals ***
-    #    # Set high_poly as active object
-    #    bpy.context.view_layer.objects.active = high_poly
-
-    #    # Add the Weighted Normal Modifier
-    #    weighted_normal_modifier = high_poly.modifiers.new(name='WeightedNormal', type='WEIGHTED_NORMAL')
-
-    #    # Set properties (adjust as needed)
-    #    weighted_normal_modifier.keep_sharp = False  # Set to True if you want to keep sharp edges
-    #    weighted_normal_modifier.weight = 50  # Default value, adjust between 1-100
-    #    weighted_normal_modifier.mode = 'FACE_AREA'  # Options: 'FACE_AREA', 'FACE_AREA_WITH_ANGLE', 'CORNER_ANGLE'
-    #    #weighted_normal_modifier.use_face_influence = True
-
-    #    # Apply the Weighted Normal modifier
-    #    bpy.ops.object.modifier_apply(modifier=weighted_normal_modifier.name)
-
-    # Copy high-poly mesh to create low-poly mesh
-    #low_poly = high_poly.copy()
-    #low_poly.data = high_poly.data.copy()
-    #low_poly.name = "LowPoly"
-    #bpy.context.collection.objects.link(low_poly)
+        
     
     highpoly = high_poly
     
     #for highpoly in objects:
     highpoly.hide_set(False)
     lowpoly = copy_obj(highpoly)
-    lowpoly.name = highpoly.name + "_LP"
+    lowpoly.name = "LowPoly"
 
-    # shade smooth and turn off autosmooth
-    #bpy.ops.object.shade_smooth()
-    #highpoly.data.use_auto_smooth = False
-    #lowpoly.data.use_auto_smooth = False
 
-    remesh_process(highpoly, lowpoly)
+    remesh_process(lowpoly) #Remesh/Decimate the lowpoly
     if len(lowpoly.data.polygons) == 0:
         print("ERROR: The mesh has 0 polygons after remeshing")
         sys.exit(1)
@@ -629,3 +514,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+end_time = time.time()  # record end
+
+elapsed_time = end_time - start_time
+print(f"Elapsed time: {elapsed_time:.2f} seconds")
