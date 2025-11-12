@@ -437,7 +437,7 @@ def main():
         sys.exit()
 
     high_poly = high_poly_objs[0]
-    high_poly.name = "HighPoly"
+    #high_poly.name = "HighPoly"
         
     
     highpoly = high_poly
@@ -445,7 +445,8 @@ def main():
     #for highpoly in objects:
     highpoly.hide_set(False)
     lowpoly = copy_obj(highpoly)
-    lowpoly.name = "LowPoly"
+    original_name = lowpoly.name
+    lowpoly.name = cork_name +"_LowPoly"
 
 
     remesh_process(lowpoly) #Remesh/Decimate the lowpoly

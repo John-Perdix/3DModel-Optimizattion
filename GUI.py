@@ -1,13 +1,13 @@
 import tkinter as tk
 from tkinter import ttk
 from sv_ttk import set_theme
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
 import subprocess, threading, re, sys, os
 
 # --- Main window ---
 root = tk.Tk()
 root.title("Blender Cork Optimizer")
-root.geometry("850x700")
+root.geometry("850x850")
 
 import pywinstyles, sys
 
@@ -15,8 +15,6 @@ pywinstyles.change_header_color(root, color="#252525") #change header window col
 
 # --- Blender paths ---
 BLENDER_PATH = r"C:\\Program Files (x86)\Steam\steamapps\\common\Blender\blender.exe"
-SCRIPT_PATH = r"C:\\Users\\joao_\\Desktop\\Faculdade\\Douturamento\\Bolsa_investigacao\\Trabalhos\\Optimizacao_blender\\Script_Test\\3DModel-Optimizattion\\cork_opt_v2.py"
-
 
 
 # --- Theme and Styles ---
@@ -34,12 +32,26 @@ def browse_script():
         script_entry.delete(0, tk.END)
         script_entry.insert(0, os.path.basename(path))
 
-def browse_input():
+def browse_inputs():
+    paths = filedialog.askopenfilenames(
+        title="Select script file(s)",
+        filetypes=[("GLTF files", "*.gltf *.glb")]
+    )
+    if paths:
+        # Store the full paths (as a list) somewhere if needed
+        input_entry.full_paths = paths
+        
+        # Show only the file names in the entry widget, joined by commas
+        input_entry.delete(0, tk.END)
+        filenames = [os.path.basename(p) for p in paths]
+        input_entry.insert(0, ", ".join(filenames))
+
+""" def browse_input():
     path = filedialog.askopenfilename(title="Select GLTF File", filetypes=[("GLTF files", "*.gltf *.glb")])
     if path:
         input_entry.full_path = path
         input_entry.delete(0, tk.END)
-        input_entry.insert(0, os.path.basename(path))
+        input_entry.insert(0, os.path.basename(path)) """
 
 def browse_output():
     path = filedialog.askdirectory(title="Select Output Folder")
@@ -48,16 +60,55 @@ def browse_output():
         output_entry.insert(0, path)
 
 def run_blender():
+    # resolve script, output and texture size once
     script_path = getattr(script_entry, "full_path", script_entry.get())
-    input_path = getattr(input_entry, "full_path", input_entry.get())
     output_path = output_entry.get()
     texture_size = texture_entry.get()
 
+    # Base directory to resolve relative paths against: the GUI script directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # If user provided relative paths, resolve them relative to the GUI file location
+    if script_path and not os.path.isabs(script_path):
+        script_path = os.path.abspath(os.path.join(base_dir, script_path))
+    if output_path and not os.path.isabs(output_path):
+        output_path = os.path.abspath(os.path.join(base_dir, output_path))
+
+    # resolve input paths: prefer full_paths (multiple), then full_path (single), then text value
+    if hasattr(input_entry, "full_paths") and input_entry.full_paths:
+        input_paths = list(input_entry.full_paths)
+    elif hasattr(input_entry, "full_path") and input_entry.full_path:
+        input_paths = [input_entry.full_path]
+    else:
+        # try text (may be a single filename shown)
+        val = input_entry.get().strip()
+        input_paths = [val] if val else []
+
+    # Resolve any relative input paths against base_dir, and also try parent folder as fallback
+    resolved_input_paths = []
+    for p in input_paths:
+        if not p:
+            continue
+        if os.path.isabs(p):
+            resolved = p
+        else:
+            # primary resolution: GUI folder
+            resolved = os.path.abspath(os.path.join(base_dir, p))
+            # fallback: try parent directory of GUI folder (useful if inputs are in ../input)
+            if not os.path.exists(resolved):
+                alt = os.path.abspath(os.path.join(os.path.dirname(base_dir), p))
+                if os.path.exists(alt):
+                    resolved = alt
+        resolved_input_paths.append(resolved)
+    input_paths = resolved_input_paths
+
+    if not input_paths:
+        messagebox.showerror("Error", "No input files selected.")
+        return
+
+    # basic validations
     if not os.path.isfile(script_path):
         messagebox.showerror("Error", "Script file does not exist.")
-        return
-    if not os.path.isfile(input_path):
-        messagebox.showerror("Error", "Input file does not exist.")
         return
     if not os.path.isdir(output_path):
         messagebox.showerror("Error", "Output folder does not exist.")
@@ -66,33 +117,95 @@ def run_blender():
         messagebox.showerror("Error", "Texture size must be numeric.")
         return
 
-    command = [
-        BLENDER_PATH, "--background", "--python", script_path, "--",
-        "--input", input_path, "--output", output_path, "--texture-size", texture_size
-    ]
+    # helper to append text to output_text from any thread
+    def append_output(text):
+        def _append():
+            output_text.config(state=tk.NORMAL)
+            output_text.insert(tk.END, text)
+            output_text.see(tk.END)
+            output_text.config(state=tk.DISABLED)
+        root.after(0, _append)
 
     def worker():
+        # disable run button while running and clear previous elapsed label
+        root.after(0, lambda: run_button.config(state=tk.DISABLED))
+        root.after(0, lambda: time_elapsed_label.config(text=""))
+        results = []
         try:
-            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            combined_lines = []
-            if proc.stdout:
-                for line in proc.stdout:
-                    output_text.config(state=tk.NORMAL)
-                    output_text.insert(tk.END, line)
-                    output_text.see(tk.END)
-                    output_text.config(state=tk.DISABLED)
-                    combined_lines.append(line)
-            returncode = proc.wait()
-            combined = "".join(combined_lines)
-            if returncode == 0:
-                m = re.search(r"Elapsed time:\s*([\d.]+)\s*seconds", combined)
-                elapsed = float(m.group(1)) if m else None
-                time_elapsed_label.config(text=f"{elapsed:.2f}s" if elapsed else "N/A")
-                messagebox.showinfo("Success", f"Finished!\nElapsed time: {elapsed:.2f} s" if elapsed else "Success!")
-            else:
-                messagebox.showerror("Error", f"Blender failed ({returncode}).")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+            for inp in input_paths:
+                inp = os.path.abspath(inp)
+                if not os.path.isfile(inp):
+                    append_output(f"Input file not found: {inp}\n")
+                    results.append((inp, None, "not found"))
+                    continue
+
+                append_output(f"\n--- Running: {os.path.basename(inp)} ---\n")
+
+                command = [
+                    BLENDER_PATH, "--background", "--python", script_path, "--",
+                    "--input", inp, "--output", output_path, "--texture-size", texture_size
+                ]
+
+                try:
+                    # run Blender with cwd set to base_dir so relative paths inside the command are interpreted
+                    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=base_dir)
+                    combined_lines = []
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            # print to terminal
+                            try:
+                                sys.stdout.write(line)
+                                sys.stdout.flush()
+                            except Exception:
+                                pass
+                            # append to GUI log
+                            append_output(line)
+                            combined_lines.append(line)
+
+                    returncode = proc.wait()
+                    combined = "".join(combined_lines)
+                    if returncode == 0:
+                        m = re.search(r"Elapsed time:\s*([\d.]+)\s*seconds", combined)
+                        elapsed = float(m.group(1)) if m else None
+                        results.append((inp, elapsed, None))
+                        # update elapsed label with cumulative per-file results
+                        def _update_elapsed_label():
+                            lines = []
+                            for _inp, _elapsed, _err in results:
+                                _name = os.path.basename(_inp)
+                                if _err:
+                                    lines.append(f"{_name}: ERROR ({_err})")
+                                else:
+                                    lines.append(f"{_name}: {_elapsed:.2f}s" if _elapsed is not None else f"{_name}: N/A")
+                            time_elapsed_label.config(text="\n".join(lines))
+
+                        root.after(0, _update_elapsed_label)
+                        append_output(f"Finished: {os.path.basename(inp)} - Elapsed: {elapsed:.2f}s\n" if elapsed else f"Finished: {os.path.basename(inp)}\n")
+                    else:
+                        results.append((inp, None, f"exit {returncode}"))
+                        append_output(f"Error: {os.path.basename(inp)} exited with code {returncode}\n")
+
+                except Exception as e:
+                    results.append((inp, None, str(e)))
+                    append_output(f"Exception while running {os.path.basename(inp)}: {e}\n")
+
+        finally:
+            # re-enable run button
+            root.after(0, lambda: run_button.config(state=tk.NORMAL))
+            # build summary
+            summary_lines = []
+            for inp, elapsed, err in results:
+                name = os.path.basename(inp)
+                if err:
+                    summary_lines.append(f"{name}: ERROR ({err})")
+                else:
+                    summary_lines.append(f"{name}: {elapsed:.2f}s")
+            summary = "\n".join(summary_lines) if summary_lines else "No runs performed."
+            # also write summary to GUI log
+            append_output("\n--- Run summary ---\n")
+            append_output(summary + "\n")
+            # show messagebox summary as well
+            root.after(0, lambda: messagebox.showinfo("Run summary", summary))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -114,7 +227,7 @@ def labeled_entry(parent, text, browse_cmd=None):
     return entry
 
 script_entry = labeled_entry(frm, "Script File:", browse_script)
-input_entry = labeled_entry(frm, "Input File:", browse_input)
+input_entry = labeled_entry(frm, "Input File:", browse_inputs)
 output_entry = labeled_entry(frm, "Output Folder:", browse_output)
 
 ttk.Label(frm, text="Texture Size:").pack(anchor="w")
@@ -126,24 +239,15 @@ run_button = ttk.Button(text="Run Blender Script", command=run_blender, style="A
 run_button.pack(pady=10)
 
 ttk.Label(text="Elapsed Time:").pack(anchor="center")
-time_elapsed_label = ttk.Label(text="0.0s")
+# Keep same look as before but allow multiple lines
+time_elapsed_label = ttk.Label(text="0.0s", justify="center", anchor="center", wraplength=600)
 time_elapsed_label.pack(anchor="center", pady=5)
-
-""" output_text = scrolledtext.Text(frm, width=90, height=15, wrap="word")
-output_text.pack(side="left", fill="both", expand=True, pady=(0,10))
-
-scrollbar = ttk.Scrollbar(frm, orient="vertical", command=output_text.yview, style="Accent.Vertical.TScrollbar")
-scrollbar.pack(side="right", fill="y", pady=(0,10))
-
-ttk.Label(frm, text="Blender Output:").pack(anchor="w", pady=(10, 0))
-output_text = scrolledtext.ScrolledText(frm, width=90, height=15, wrap="word", state=tk.DISABLED)
-output_text.pack(fill="both", expand=True) """
 
 # --- Container frame for Text + Scrollbar ---
 text_frame = ttk.Frame(frm)
 text_frame.pack(fill="both", expand=True)
 
-# --- Text widget ---
+# --- Log text widget ---
 output_text = tk.Text(text_frame, wrap="word", state="disabled")
 output_text.pack(side="left", fill="both", expand=True)
 
@@ -156,9 +260,9 @@ output_text.configure(yscrollcommand=scrollbar.set)
 
 
 # Default values
-default_input = r"C:\Users\joao_\Desktop\Faculdade\Douturamento\Bolsa_investigacao\Trabalhos\Optimizacao_blender\Script_Test\3DModel-Optimizattion\input\0101_primeiro_2.gltf"
-default_output = r"C:\Users\joao_\Desktop\Faculdade\Douturamento\Bolsa_investigacao\Trabalhos\Optimizacao_blender\Script_Test\3DModel-Optimizattion\output"
-default_script = SCRIPT_PATH
+default_input = r"input/0101_primeiro_2.gltf"
+default_output = r"output"
+default_script = r"cork_opt_v2.py"
 
 script_entry.full_path = default_script
 script_entry.insert(0, os.path.basename(default_script))

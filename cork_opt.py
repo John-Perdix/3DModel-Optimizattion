@@ -460,7 +460,8 @@ def main():
     #for highpoly in objects:
     highpoly.hide_set(False)
     lowpoly = copy_obj(highpoly)
-    lowpoly.name = "LowPoly"
+    original_name = lowpoly.name
+    lowpoly.name = original_name +"_LowPoly"
 
     #clean_high_poly_mesh(lowpoly)
     
