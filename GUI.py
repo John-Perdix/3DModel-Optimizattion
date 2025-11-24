@@ -2,7 +2,8 @@ import tkinter as tk
 from tkinter import ttk
 from sv_ttk import set_theme
 from tkinter import filedialog, messagebox
-import subprocess, threading, re, sys, os
+import subprocess, threading, re, sys, os, time
+import tkinter.font as tkFont
 
 # --- Main window ---
 root = tk.Tk()
@@ -14,7 +15,7 @@ import pywinstyles, sys
 pywinstyles.change_header_color(root, color="#252525") #change header window color
 
 # --- Blender paths ---
-BLENDER_PATH = r"C:\\Program Files (x86)\Steam\steamapps\\common\Blender\blender.exe"
+BLENDER_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
 
 
 # --- Theme and Styles ---
@@ -45,6 +46,12 @@ def browse_inputs():
         input_entry.delete(0, tk.END)
         filenames = [os.path.basename(p) for p in paths]
         input_entry.insert(0, ", ".join(filenames))
+        # update input count label
+        try:
+            cnt = len(paths)
+            input_count_label.config(text=(f"{cnt} file" if cnt == 1 else f"{cnt} files selected"))
+        except NameError:
+            pass
 
 """ def browse_input():
     path = filedialog.askopenfilename(title="Select GLTF File", filetypes=[("GLTF files", "*.gltf *.glb")])
@@ -130,6 +137,7 @@ def run_blender():
         # disable run button while running and clear previous elapsed label
         root.after(0, lambda: run_button.config(state=tk.DISABLED))
         root.after(0, lambda: time_elapsed_label.config(text=""))
+        total_start = time.time()
         results = []
         try:
             for inp in input_paths:
@@ -190,9 +198,11 @@ def run_blender():
                     append_output(f"Exception while running {os.path.basename(inp)}: {e}\n")
 
         finally:
+            # compute total elapsed for whole process
+            total_elapsed = time.time() - total_start
             # re-enable run button
             root.after(0, lambda: run_button.config(state=tk.NORMAL))
-            # build summary
+            # build per-file summary lines
             summary_lines = []
             for inp, elapsed, err in results:
                 name = os.path.basename(inp)
@@ -201,6 +211,11 @@ def run_blender():
                 else:
                     summary_lines.append(f"{name}: {elapsed:.2f}s")
             summary = "\n".join(summary_lines) if summary_lines else "No runs performed."
+            # set label with total first, then per-file lines
+            label_text = f"Total: {total_elapsed:.2f}s"
+            if summary:
+                label_text = label_text + "\n" + summary
+            root.after(0, lambda: time_elapsed_label.config(text=label_text))
             # also write summary to GUI log
             append_output("\n--- Run summary ---\n")
             append_output(summary + "\n")
@@ -216,24 +231,87 @@ frm = ttk.Frame(root, padding=10, style="My.TFrame")
 frm.pack(fill="both", expand=True)
 
 
-def labeled_entry(parent, text, browse_cmd=None):
+def labeled_entry(parent, text, browse_cmd=None, width=None, expand=True):
+    """Create a single-row labeled entry using grid inside the row frame.
+
+    Parameters:
+    - parent: parent widget
+    - text: label text
+    - browse_cmd: optional callback for a Browse button
+    - width: optional entry width in characters (passed to ttk.Entry)
+    - expand: if True the entry column will expand to fill available space;
+              if False the entry will keep the given width and not stretch.
+
+    This allows controlling the label column minimum width (in pixels) so labels
+    have consistent horizontal space across rows, and lets callers request
+    a fixed-size entry (useful for small numeric fields like texture size).
+    """
+    # change this value (pixels) to widen/narrow the label column
+    LABEL_COL_MINWIDTH = 220
+
     frame = ttk.Frame(parent)
     frame.pack(fill="x", pady=5)
-    ttk.Label(frame, text=text, width=15).pack(side="left")
-    entry = ttk.Entry(frame)
-    entry.pack(side="left", fill="x", expand=True, padx=5)
+
+    lbl = ttk.Label(frame, text=text)
+    lbl.grid(row=0, column=0, sticky="w")
+    # reserve a fixed minimum width for the label column
+    frame.grid_columnconfigure(0, minsize=LABEL_COL_MINWIDTH)
+
+    # create entry with optional width
+    if width is not None:
+        entry = ttk.Entry(frame, width=width)
+    else:
+        entry = ttk.Entry(frame)
+
+    # layout: either allow the entry to expand, or keep it fixed-size
+    if expand:
+        entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        # allow the entry to expand horizontally
+        frame.grid_columnconfigure(1, weight=1)
+    else:
+        entry.grid(row=0, column=1, sticky="w", padx=(6, 6))
+        frame.grid_columnconfigure(1, weight=0)
+
     if browse_cmd:
-        ttk.Button(frame, text="Browse", command=browse_cmd).pack(side="right")
+        btn = ttk.Button(frame, text="Browse", command=browse_cmd)
+        btn.grid(row=0, column=2, sticky="e")
+
     return entry
 
-script_entry = labeled_entry(frm, "Script File:", browse_script)
-input_entry = labeled_entry(frm, "Input File:", browse_inputs)
-output_entry = labeled_entry(frm, "Output Folder:", browse_output)
 
-ttk.Label(frm, text="Texture Size:").pack(anchor="w")
-texture_entry = ttk.Entry(frm, width=10)
+
+script_entry = labeled_entry(frm, "Script File:", browse_script)
+custom_font = tkFont.Font(size=8)
+spacing_label = ttk.Label(frm, text="", font=custom_font)
+spacing_label.pack(anchor="e")
+
+
+input_entry = labeled_entry(frm, "Input Files 3d models:", browse_inputs)
+# label showing how many input files are currently selected
+input_count_label = ttk.Label(frm, text="0 files selected", font=custom_font)
+input_count_label.pack(anchor="e")
+
+output_entry = labeled_entry(frm, "Output Folder:", browse_output)
+spacing_label = ttk.Label(frm, text="", font=custom_font)
+spacing_label.pack(anchor="e")
+
+
+
+texture_entry = labeled_entry(frm, "Texture Size:", width=4, expand=False)
 texture_entry.insert(0, "2048")
-texture_entry.pack(anchor="w", pady=5)
+
+# validation: allow only digits in the texture size entry (empty allowed while editing)
+def _only_digits(p):
+    # p is the proposed value for the entry ("%P")
+    return p == "" or p.isdigit()
+
+_vcmd = root.register(_only_digits)
+try:
+    # configure validation on the ttk.Entry
+    texture_entry.configure(validate="key", validatecommand=(_vcmd, "%P"))
+except Exception:
+    # fallback: if ttk.Entry on this platform/version doesn't support validate, ignore
+    pass
 
 run_button = ttk.Button(text="Run Blender Script", command=run_blender, style="Accent.TButton")
 run_button.pack(pady=10)
@@ -262,12 +340,17 @@ output_text.configure(yscrollcommand=scrollbar.set)
 # Default values
 default_input = r"input/0101_primeiro_2.gltf"
 default_output = r"output"
-default_script = r"cork_opt_v2.py"
+default_script = r"cork_opt_uc.py"
 
 script_entry.full_path = default_script
 script_entry.insert(0, os.path.basename(default_script))
 input_entry.full_path = default_input
 input_entry.insert(0, os.path.basename(default_input))
 output_entry.insert(0, default_output)
+# update input count label for defaults
+try:
+    input_count_label.config(text="1 file")
+except NameError:
+    pass
 
 root.mainloop()
